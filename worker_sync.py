@@ -20,16 +20,24 @@ if not LOG.handlers:
     LOG.addHandler(ch)
 
 
-# Conexión simple y listener; la implementación original funcionaba correctamente anoche
-conn = psycopg2.connect(
-    host=os.getenv('OLTP_HOST', 'shortline.proxy.rlwy.net'),
-    user=os.getenv('OLTP_USER', 'postgres'),
-    password=os.getenv('OLTP_PASSWORD', ''),
-    dbname=os.getenv('OLTP_DBNAME', 'railway'),
-    port=int(os.getenv('OLTP_PORT', 39237))
-)
-conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
-cur = conn.cursor()
+
+# Intentar conectar al OLTP y preparar LISTEN; envolver en try/except para que
+# cualquier fallo de conexión sea claramente visible en los logs (Railway).
+try:
+    LOG.info('Worker arrancando: conectando a OLTP...')
+    conn = psycopg2.connect(
+        host=os.getenv('OLTP_HOST', 'shortline.proxy.rlwy.net'),
+        user=os.getenv('OLTP_USER', 'postgres'),
+        password=os.getenv('OLTP_PASSWORD', ''),
+        dbname=os.getenv('OLTP_DBNAME', 'railway'),
+        port=int(os.getenv('OLTP_PORT', 39237))
+    )
+    conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+    cur = conn.cursor()
+except Exception:
+    LOG.exception('Fallo al conectar a OLTP al arrancar el worker; saliendo')
+    # Aseguramos que la excepción y salida queden en los logs de stdout
+    sys.exit(1)
 
 # Lista de tablas a escuchar
 tablas = ["ventas", "productos", "clientes", "categoria", "orden", "orden_producto"]
