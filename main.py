@@ -4,7 +4,22 @@ import os
 import signal
 import subprocess
 import sys
+import json
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+import argparse
+import logging
+import os
+import signal
+import subprocess
+import sys
+import json
+import time
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+
+
 
 
 LOG = logging.getLogger('sync_main')
@@ -12,14 +27,94 @@ LOG = logging.getLogger('sync_main')
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        # health endpoints
         if self.path in ('/', '/health', '/healthz'):
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain; charset=utf-8')
             self.end_headers()
             self.wfile.write(b'OK')
-        else:
-            self.send_response(404)
+            return
+
+LOG = logging.getLogger('sync_main')
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # health endpoints
+        if self.path in ('/', '/health', '/healthz'):
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
             self.end_headers()
+            self.wfile.write(b'OK')
+            return
+
+        # worker status endpoint (reads worker_status.json)
+        if self.path == '/worker-status':
+            status = {'worker': 'unknown', 'last_heartbeat': None, 'age_seconds': None}
+            status_file = os.path.join(os.path.dirname(__file__), 'worker_status.json')
+            try:
+                with open(status_file, 'r', encoding='utf-8') as fh:
+                    data = json.load(fh)
+                    last = float(data.get('last_heartbeat', 0))
+                    status['last_heartbeat'] = last
+                    status['age_seconds'] = int(time.time() - last) if last else None
+                    status['worker'] = 'up' if last and (time.time() - last) < 120 else 'stale'
+            except FileNotFoundError:
+                status['worker'] = 'not_started'
+            except Exception:
+                status['worker'] = 'error'
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps(status).encode('utf-8'))
+            return
+
+        # sync trigger endpoint: /sync?table=...&op=...&id=...&token=...
+        if self.path.startswith('/sync'):
+            parsed = urlparse(self.path)
+            qs = parse_qs(parsed.query)
+            token_env = os.getenv('SYNC_TOKEN')
+            if token_env and qs.get('token', [None])[0] != token_env:
+                self.send_response(403)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': 'forbidden'}).encode('utf-8'))
+                return
+
+            table = qs.get('table', [None])[0]
+            op = qs.get('op', [None])[0]
+            record_id = qs.get('id', [None])[0]
+
+            script = os.path.join(os.path.dirname(__file__), 'sync_oltp_to_olap.py')
+            cmd = [sys.executable, script]
+            if table:
+                cmd += ['--table', table]
+            if op:
+                cmd += ['--op', op]
+            if record_id:
+                cmd += ['--id', record_id]
+
+            try:
+                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                resp = {
+                    'returncode': proc.returncode,
+                    'stdout': proc.stdout.splitlines()[-20:],
+                    'stderr': proc.stderr.splitlines()[-20:],
+                }
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(json.dumps(resp).encode('utf-8'))
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': str(e)}).encode('utf-8'))
+            return
+
+        # default 404
+        self.send_response(404)
+        self.end_headers()
 
 
 def run_health_server(host: str, port: int):
@@ -106,3 +201,4 @@ def main(argv=None):
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
