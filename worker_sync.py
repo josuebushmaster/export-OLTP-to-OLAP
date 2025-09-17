@@ -84,16 +84,16 @@ def _run_loop():
             else:
                 operacion, id_registro = 'unknown', payload
             LOG.info("Notificación recibida | Tabla: %s | Operación: %s | ID: %s", tabla, operacion, id_registro)
-            cmd = [
-                sys.executable, "infrastructure/sync/sync_oltp_to_olap.py",
-                "--table", tabla,
-                "--op", operacion,
-            ]
+            # Ejecutar el script de sincronización ubicado en el mismo directorio
+            script = os.path.join(os.path.dirname(__file__), 'sync_oltp_to_olap.py')
+            cmd = [sys.executable, script, "--table", tabla, "--op", operacion]
             try:
                 id_int = int(id_registro)
                 cmd += ["--id", str(id_int)]
             except (TypeError, ValueError):
                 pass
+            # Registrar el comando que ejecutará el worker (usar INFO para que aparezca en Railway)
+            LOG.info('Ejecutando comando de sync: %s', ' '.join(cmd))
             try:
                 subprocess.run(cmd, check=True)
             except subprocess.CalledProcessError as e:
